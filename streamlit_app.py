@@ -4,40 +4,68 @@ import pandas as pd
 import plotly.express as px
 import io
 
-
 # =====================================
-# Page Config & Global Styling
+# Page Config & Custom Dark-Mode Styling
 # =====================================
-st.set_page_config(page_title="RMB Capital Optimization Tool", layout="wide")
+st.set_page_config(page_title="Capital Optimization Tool (Dark Mode)", layout="wide")
 
-st.markdown(
-    """
-    <style>
-    body {
-        background-color: #EDF2FB;
-        color: #333333;
-    }
-    .sidebar .sidebar-content {
-        background-color: #FFFFFF;
-    }
-    .reportview-container .main .block-container {
-        padding-top: 1rem;
-        padding-bottom: 1rem;
-    }
-    h1, h2, h3, h4 {
-        font-family: Arial, sans-serif;
-    }
-    .stMetric {
-        background-color: #E8EBF0;
-        padding: 0.4rem;
-        border-radius: 0.25rem;
-        text-align: center;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+# Inject custom CSS for dark mode
+dark_mode_css = """
+<style>
+/* Make the entire background dark */
+body {
+    background-color: #222222; 
+    color: #f0f0f0;
+}
 
+/* Sidebars */
+.sidebar .sidebar-content {
+    background-color: #333333;
+}
+
+/* Streamlit Main Container */
+.reportview-container .main .block-container {
+    color: #f0f0f0;
+}
+
+/* Headers in dark mode */
+h1, h2, h3, h4, h5, h6 {
+    color: #ffffff;
+}
+
+/* Metric widget background */
+.stMetric {
+    background-color: #444444; 
+    border-radius: 0.25rem;
+    text-align: center;
+    color: #f0f0f0;
+}
+
+/* Table styling overrides */
+table td, table th {
+    color: #f0f0f0;
+}
+
+/* Links, buttons, etc. can also be styled if desired */
+a, .stButton>button {
+    background-color: #444444; 
+    color: #f0f0f0; 
+    border-color: #666666;
+}
+
+/* Toast messages, success, error boxes */
+.stAlert, .stException {
+    background-color: #333333;
+    color: #f0f0f0;
+}
+
+/* Info boxes, etc. */
+element-container .stAlert p {
+    color: #f0f0f0;
+}
+</style>
+"""
+st.markdown(dark_mode_css, unsafe_allow_html=True)
 
 # =====================================
 # Helper Functions
