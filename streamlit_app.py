@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.express as px
 import io
 
+
 # =====================================
 # Page Config & Global Styling
 # =====================================
