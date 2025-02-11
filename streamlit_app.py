@@ -1,504 +1,363 @@
 import streamlit as st
-import numpy as np
 import pandas as pd
-import plotly.express as px
-import io
+import numpy as np
+import random
 
-# =====================================
-# Page Config & Global Styling
-# =====================================
+# ---------------------------------------
+# PAGE CONFIG & TITLE
+# ---------------------------------------
 st.set_page_config(page_title="RMB Capital Optimization Tool", layout="wide")
-
-st.markdown(
-    """
-    <style>
-    body {
-        background-color: #EDF2FB;
-        color: #333333;
-    }
-    .sidebar .sidebar-content {
-        background-color: #FFFFFF;
-    }
-    .reportview-container .main .block-container {
-        padding-top: 1rem;
-        padding-bottom: 1rem;
-    }
-    h1, h2, h3, h4 {
-        font-family: Arial, sans-serif;
-    }
-    .stMetric {
-        background-color: #E8EBF0;
-        padding: 0.4rem;
-        border-radius: 0.25rem;
-        text-align: center;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-
-# =====================================
-# Helper Functions
-# =====================================
-def calculate_capital(rwa, cap_ratio):
-    """
-    Capital = RWA * (cap_ratio / 100).
-    Example: If RWA=1,000,000 and cap_ratio=12,
-    capital usage = 1,000,000 * 0.12 = 120,000
-    """
-    return rwa * (cap_ratio / 100.0)
-
-
-def scale_rwa_with_lgd(rwa_old, lgd_old, lgd_new):
-    """
-    Simplified formula to scale RWA if LGD changes:
-    RWA_new = RWA_old * (LGD_new / LGD_old).
-
-    Real Basel or internal models often use more complex
-    equations involving PD, EAD, maturity, correlation, etc.
-    """
-    if lgd_old == 0:
-        return 0
-    scale_factor = lgd_new / lgd_old
-    return rwa_old * scale_factor
-
-
-def create_fictional_clients():
-    """
-    Returns a DataFrame of 5 fictional clients with:
-      - Client Name
-      - Loan Amount
-      - Term (years)
-      - PD (%)
-      - LGD (%)
-      - Current RWA
-    """
-    data = {
-        "Client": [
-            "Atlantis Manufacturing",
-            "Zulu Shipping",
-            "Shades Retail",
-            "Green Earth Energy",
-            "Solace Holdings"
-        ],
-        "Loan Amount (ZAR)": [500_000_000, 750_000_000, 1_000_000_000, 1_250_000_000, 1_800_000_000],
-        "Term (Years)": [3, 4, 2, 7, 5],
-        "PD (%)": [1.2, 2.0, 3.5, 1.0, 2.5],
-        "LGD (%)": [30.0, 45.0, 50.0, 20.0, 40.0],
-        "RWA (ZAR)": [300_000_000, 400_000_000, 650_000_000, 200_000_000, 800_000_000]
-    }
-    return pd.DataFrame(data)
-
-
-def hide_dataframe_index(df_style):
-    """Helper to hide the Styler index in st.dataframe()."""
-    return df_style.hide(axis="index")
-
-
-# =====================================
-# Main Page: Title & Intro
-# =====================================
 st.title("RMB Capital Optimization Tool")
 
-st.markdown(
+st.write(
     """
-    This tool demonstrates how **credit protection** (e.g., via CLNs) 
-    might reduce **Loss Given Default (LGD)**, thus lowering 
-    **Risk-Weighted Assets (RWA)** and freeing up **capital**.
-    """
-)
-
-st.info(
-    """
-    **How It Works**  
-    - We have five fictional clients, each with different loan amounts, PD, LGD, and RWA.  
-    - By reducing LGD, we recalculate RWA and see how much capital is freed.  
-    - We also provide a simple "optimization" approach to allocate LGD reduction 
-      among the clients who yield the biggest capital relief per LGD point.  
-    - Finally, we discuss additional factors for **issuing CLNs**.
+    **Overview**:
+    1. **Section 1**: Editable Portfolio (Drawn%, Undrawn%, PD).  
+    2. **Section 2**: LGD Reversion Table (how much of each loan to sell 
+       to restore Old LGD).  
+    3. **Section 3**: Available Capital & Shortfall (defaults to match portfolio usage).  
+    4. **Section 4**: New RCF creation.  
+    5. **Section 5**: Industry Filter & Sell-off Options if a shortfall remains, 
+       showing only clients that can individually solve the shortfall with \(\le 100\%\) partial coverage.
     """
 )
 
-# =====================================
-# Sidebar: Inputs
-# =====================================
-st.sidebar.header("Global Parameters")
+st.markdown("---")
 
-cap_ratio = st.sidebar.number_input(
-    "Capital Ratio Requirement (%)",
-    min_value=0.0,
-    value=12.0,
-    step=0.5,
-    help="The bank's regulatory or internal capital ratio requirement."
-)
-
-protection_budget = st.sidebar.number_input(
-    "Total LGD Reduction Budget (bps of LGD)",
-    min_value=0.0,
-    value=40.0,
-    step=5.0,
-    help=(
-        "A simplified 'budget' for how many percentage points of LGD reduction you "
-        "can allocate across all clients. E.g., if budget=40, you could allocate "
-        "20 to one client, 20 to another, etc."
-    )
-)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("#### Helper Notes")
-st.sidebar.info(
-    """
-    Each client starts with a 'base LGD.'  
-    You can distribute the 'LGD reduction budget' across multiple clients.  
-    This is purely illustrative—real-world deals are more complex.
-    """
-)
-
-# =====================================
-# Step 1: Five Fictional Clients (Baseline)
-# =====================================
-df_clients = create_fictional_clients()
-
-# Calculate their current capital usage (no protection)
-df_clients["Current Capital (ZAR)"] = [
-    calculate_capital(rwa, cap_ratio) for rwa in df_clients["RWA (ZAR)"]
+# ---------------------------------------
+# GLOBALS / HELPER FUNCTIONS
+# ---------------------------------------
+SA_COMPANIES = [
+    "Sasol", "Shoprite", "MTN", "Vodacom", "Standard Bank", "Absa",
+    "Nedbank", "FirstRand", "Discovery", "Sanlam", "Old Mutual", "Anglo American",
+    "BHP Billiton", "Exxaro", "Mondi", "Tiger Brands", "Aspen Pharmacare",
+    "Naspers", "Woolworths", "Pick n Pay", "Mediclinic", "Massmart", "Netcare",
+    "Impala Platinum", "Kumba Iron Ore", "Harmony Gold", "Sibanye-Stillwater",
+    "African Rainbow Minerals", "Famous Brands", "Gold Fields"
 ]
 
-st.subheader("1. Baseline: Five Fictional Clients")
-st.write("Below are five sample clients with pre-credit-protection data:")
-
-# We'll style the baseline DataFrame with commas
-format_dict_baseline = {
-    "Loan Amount (ZAR)": "{:,.0f}",
-    "Term (Years)": "{:,.0f}",
-    "PD (%)": "{:,.2f}",
-    "LGD (%)": "{:,.2f}",
-    "RWA (ZAR)": "{:,.0f}",
-    "Current Capital (ZAR)": "{:,.2f}",
-}
-styled_baseline = df_clients.style.format(format_dict_baseline)
-styled_baseline = hide_dataframe_index(styled_baseline)
-st.dataframe(styled_baseline, use_container_width=True)
-
-# =====================================
-# Step 2: Allocate LGD Reductions
-# =====================================
-st.subheader("2. Allocate LGD Reduction")
-
-st.write(
-    """
-    We'll distribute the **LGD reduction budget** (in % points) across the 5 clients.
-    Enter how many LGD points to allocate to each client. 
-    """
-)
-
-client_lgd_allocations = []
-col_list = st.columns(5)
-for i, client_name in enumerate(df_clients["Client"]):
-    with col_list[i]:
-        base_lgd = df_clients.loc[i, "LGD (%)"]
-        max_alloc = min(protection_budget, base_lgd)
-        alloc_val = st.number_input(
-            f"{client_name} LGD↓",
-            min_value=0.0,
-            max_value=float(max_alloc),
-            value=0.0,
-            step=5.0
-        )
-        client_lgd_allocations.append(alloc_val)
-
-allocated_sum = sum(client_lgd_allocations)
-if allocated_sum > protection_budget:
-    st.warning(
-        f"You've allocated a total of {allocated_sum:.2f} LGD points, "
-        f"but your budget is only {protection_budget:.2f}. Please adjust."
-    )
-
-# =====================================
-# Step 3: Recalculate RWA & Freed Capital
-# =====================================
-st.subheader("3. Recalculation & Results")
-
-df_opt = df_clients.copy()
-
-new_lgd_vals = []
-new_rwa_vals = []
-new_cap_vals = []
-cap_freed_vals = []
-
-for i, row in df_opt.iterrows():
-    base_lgd = row["LGD (%)"]
-    base_rwa = row["RWA (ZAR)"]
-    old_cap = row["Current Capital (ZAR)"]
-    allocated = client_lgd_allocations[i]
-
-    if allocated_sum <= protection_budget:
-        new_lgd = max(base_lgd - allocated, 0)
-    else:
-        # If user overallocated, revert to baseline
-        new_lgd = base_lgd
-
-    new_rwa = scale_rwa_with_lgd(base_rwa, base_lgd, new_lgd)
-    new_cap = calculate_capital(new_rwa, cap_ratio)
-
-    new_lgd_vals.append(new_lgd)
-    new_rwa_vals.append(new_rwa)
-    new_cap_vals.append(new_cap)
-    cap_freed_vals.append(old_cap - new_cap)
-
-df_opt["New LGD (%)"] = new_lgd_vals
-df_opt["New RWA (ZAR)"] = new_rwa_vals
-df_opt["New Capital (ZAR)"] = new_cap_vals
-df_opt["Capital Freed (ZAR)"] = cap_freed_vals
-
-# Portfolio-level summary
-total_current_cap = df_opt["Current Capital (ZAR)"].sum()
-total_new_cap = df_opt["New Capital (ZAR)"].sum()
-portfolio_cap_freed = total_current_cap - total_new_cap
-
-# Create a table of results
-df_display = df_opt[
-    [
-        "Client",
-        "Loan Amount (ZAR)",
-        "Term (Years)",
-        "PD (%)",
-        "LGD (%)",
-        "New LGD (%)",
-        "RWA (ZAR)",
-        "New RWA (ZAR)",
-        "Current Capital (ZAR)",
-        "New Capital (ZAR)",
-        "Capital Freed (ZAR)"
-    ]
-].copy()
-
-# Round numeric columns as needed
-format_dict_final = {
-    "Loan Amount (ZAR)": "{:,.0f}",
-    "Term (Years)": "{:,.0f}",
-    "PD (%)": "{:,.2f}",
-    "LGD (%)": "{:,.2f}",
-    "New LGD (%)": "{:,.2f}",
-    "RWA (ZAR)": "{:,.0f}",
-    "New RWA (ZAR)": "{:,.0f}",
-    "Current Capital (ZAR)": "{:,.2f}",
-    "New Capital (ZAR)": "{:,.2f}",
-    "Capital Freed (ZAR)": "{:,.2f}"
+SECTOR_MAP = {
+    "Sasol": "Oil & Gas",
+    "Shoprite": "Retail",
+    "MTN": "Telecom",
+    "Vodacom": "Telecom",
+    "Standard Bank": "Financials",
+    "Absa": "Financials",
+    "Nedbank": "Financials",
+    "FirstRand": "Financials",
+    "Discovery": "Insurance",
+    "Sanlam": "Insurance",
+    "Old Mutual": "Insurance",
+    "Anglo American": "Mining",
+    "BHP Billiton": "Mining",
+    "Exxaro": "Mining",
+    "Mondi": "Manufacturing",
+    "Tiger Brands": "Food & Beverage",
+    "Aspen Pharmacare": "Healthcare",
+    "Naspers": "Technology",
+    "Woolworths": "Retail",
+    "Pick n Pay": "Retail",
+    "Mediclinic": "Healthcare",
+    "Massmart": "Retail",
+    "Netcare": "Healthcare",
+    "Impala Platinum": "Mining",
+    "Kumba Iron Ore": "Mining",
+    "Harmony Gold": "Mining",
+    "Sibanye-Stillwater": "Mining",
+    "African Rainbow Minerals": "Mining",
+    "Famous Brands": "Food & Beverage",
+    "Gold Fields": "Mining"
 }
 
-styled_results = df_display.style.format(format_dict_final)
-styled_results = hide_dataframe_index(styled_results)
-st.dataframe(styled_results, use_container_width=True)
+CAP_RATIO = 0.12  # 12% capital ratio
+random.seed(42)
 
-st.info(
-    f"""
-    **Portfolio Summary**  
-    - Total Current Capital Usage: ZAR {total_current_cap:,.2f}  
-    - Total New Capital Usage: ZAR {total_new_cap:,.2f}  
-    - **Total Capital Freed**: ZAR {portfolio_cap_freed:,.2f}
+
+def create_fictional_clients(num=30):
+    """Generate 30 random clients with Old vs. New LGDs, PD, etc."""
+    data_list = []
+    for i in range(num):
+        cname = SA_COMPANIES[i]
+        sec = SECTOR_MAP[cname]
+
+        loan_amt = random.randint(100_000_000, 2_000_000_000)
+        old_lgd = random.randint(20, 50)
+        new_lgd = old_lgd + random.randint(0, 10)  # "uplift"
+        drawn_pct = random.randint(40, 70)
+        undrawn_pct = 100 - drawn_pct
+        pd_val = round(random.uniform(1.0, 5.0), 2)
+
+        data_list.append({
+            "Client": cname,
+            "Sector": sec,
+            "Loan Amount": loan_amt,
+            "Old LGD (%)": old_lgd,
+            "New LGD (%)": new_lgd,
+            "Drawn (%)": drawn_pct,
+            "Undrawn (%)": undrawn_pct,
+            "PD (%)": pd_val
+        })
+    return pd.DataFrame(data_list)
+
+
+def calc_portfolio_cap_usage(row):
     """
-)
-
-# =====================================
-# Step 4: Simple "Optimization" Helper
-# =====================================
-st.subheader("4. Simple Optimization Suggestion")
-st.write(
+    RWA = Loan * (Drawn%/100) * (PD%/100) * (NewLGD%/100) * 12.5
+    capital usage = RWA * CAP_RATIO
     """
-    If you'd like the system to **auto-suggest** how to allocate 
-    your LGD reduction budget, we'll do a basic ranking by 
-    \"Capital Freed per 1 LGD point.\"
+    amt = row["Loan Amount"]
+    drawn = row["Drawn (%)"]
+    pd_ = row["PD (%)"]
+    new_lgd = row["New LGD (%)"]
+    rwa = amt * (drawn / 100) * (pd_ / 100) * (new_lgd / 100) * 12.5
+    return rwa * CAP_RATIO
+
+
+def calc_loan_to_sell_for_lgd_reversion(row):
     """
-)
-
-
-def capital_freed_per_point(row):
-    if row["LGD (%)"] == 0:
+    If NewLGD > OldLGD:
+      portion = (NewLGD - OldLGD)/NewLGD
+      LoanToSell = portion * LoanAmt * (Drawn%/100)
+    else 0
+    """
+    old_lgd = row["Old LGD (%)"]
+    new_lgd = row["New LGD (%)"]
+    if new_lgd <= old_lgd:
         return 0.0
-    old_cap = row["Current Capital (ZAR)"]
-    # Hypothetically reduce the LGD by 1 point
-    new_rwa_test = scale_rwa_with_lgd(row["RWA (ZAR)"], row["LGD (%)"], row["LGD (%)"] - 1)
-    new_cap_test = calculate_capital(new_rwa_test, cap_ratio)
-    return old_cap - new_cap_test
+    portion = (new_lgd - old_lgd) / new_lgd
+    amt = row["Loan Amount"]
+    drawn_fraction = row["Drawn (%)"] / 100
+    return portion * amt * drawn_fraction
 
 
-df_opt["Freed per LGDpt (ZAR)"] = df_opt.apply(capital_freed_per_point, axis=1)
-df_opt_sorted = df_opt.sort_values(by="Freed per LGDpt (ZAR)", ascending=False)
+def fraction_of_drawn(row):
+    """
+    fraction_sold = (LoanToSell / (loan_amt * drawn%/100)) * 100
+    """
+    drawn_amt = row["Loan Amount"] * (row["Drawn (%)"] / 100)
+    if drawn_amt == 0:
+        return 0.0
+    return (row["Loan to Sell (ZAR)"] / drawn_amt) * 100
 
-col_autoalloc, col_desc = st.columns([1, 2])
-with col_autoalloc:
-    st.write("**Allocation Suggestion**")
-    remaining_budget = protection_budget
-    suggested_allocs = []
-    for _, row in df_opt_sorted.iterrows():
-        base_lgd = row["LGD (%)"]
-        if remaining_budget <= 0 or base_lgd <= 0:
-            suggested_allocs.append(0.0)
-            continue
-        allocation = min(remaining_budget, base_lgd)
-        suggested_allocs.append(allocation)
-        remaining_budget -= allocation
 
-    df_suggest = df_opt_sorted[["Client", "LGD (%)", "Freed per LGDpt (ZAR)"]].copy()
-    df_suggest["Suggested LGD Reduction"] = suggested_allocs
-    df_suggest["Final LGD (%)"] = df_suggest["LGD (%)"] - df_suggest["Suggested LGD Reduction"]
+def new_rcf_usage(amt, dr, pd_, lgd):
+    """
+    RWA = amt * (dr/100) * (pd_/100) * (lgd/100) * 12.5
+    capital usage = RWA * CAP_RATIO
+    """
+    rwa = amt * (dr / 100) * (pd_ / 100) * (lgd / 100) * 12.5
+    return rwa * CAP_RATIO
 
-    format_dict_suggest = {
-        "LGD (%)": "{:,.2f}",
-        "Freed per LGDpt (ZAR)": "{:,.2f}",
-        "Suggested LGD Reduction": "{:,.2f}",
-        "Final LGD (%)": "{:,.2f}"
-    }
-    styled_suggest = df_suggest.style.format(format_dict_suggest).hide(axis="index")
-    st.dataframe(styled_suggest, use_container_width=True)
 
-with col_desc:
-    st.markdown(
-        """
-        1. Start with the client offering the highest capital relief per 1 LGD point.  
-        2. Allocate as many LGD points as possible until you run out of budget or 
-           the client's LGD hits zero.  
-        3. Move on to the next.  
+def format_num(x, decimals=2):
+    return f"{x:,.{decimals}f}"
 
-        **Note**: Real optimization might require advanced solvers 
-        (linear or mixed-integer programming) and factoring in 
-        the *cost* of protection.
-        """
-    )
 
-# =====================================
-# Step 5: Visualization - Capital Freed
-# =====================================
-st.subheader("5. Visualization: Capital Freed by Client")
+# ================================================
+# SECTION 1: EDITABLE PORTFOLIO
+# ================================================
+st.subheader("Section 1: Editable Portfolio")
 
-fig = px.bar(
-    df_display,
-    x="Client",
-    y="Capital Freed (ZAR)",
-    title="Capital Freed After LGD Reductions",
-    color="Client",
-    labels={
-        "Capital Freed (ZAR)": "Capital Freed (ZAR)",
-        "Client": "Client"
-    }
+df_initial = create_fictional_clients()
+df_edited = st.data_editor(
+    df_initial,
+    column_config={
+        "Client": st.column_config.TextColumn(disabled=True),
+        "Sector": st.column_config.TextColumn(disabled=True),
+        "Loan Amount": st.column_config.NumberColumn(disabled=True),
+        "Old LGD (%)": st.column_config.NumberColumn(disabled=True),
+        "New LGD (%)": st.column_config.NumberColumn(disabled=True),
+        "Drawn (%)": st.column_config.NumberColumn(),
+        "Undrawn (%)": st.column_config.NumberColumn(),
+        "PD (%)": st.column_config.NumberColumn(),
+    },
+    use_container_width=True
 )
-fig.update_layout(showlegend=False)
-st.plotly_chart(fig, use_container_width=True)
-
-# =====================================
-# Step 6: Download Section - Excel Export
-# =====================================
-st.subheader("6. Download Your Results")
-st.write("Download the final table (no index) to Excel for further analysis.")
-
-output = io.BytesIO()
-with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-    df_display.to_excel(writer, index=False, sheet_name="Results")
-    worksheet = writer.sheets["Results"]
-    for idx, col in enumerate(df_display.columns):
-        worksheet.set_column(idx, idx, 20)
-excel_data = output.getvalue()
-
-st.download_button(
-    label="Download Excel",
-    data=excel_data,
-    file_name="Capital_Optimization_Results.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+st.info(
+    "You can modify Drawn%, Undrawn%, and PD% for each client. "
+    "Old & New LGDs are read-only for demonstration."
 )
 
+df_portfolio = df_edited.copy()
+df_portfolio["Capital Usage"] = df_portfolio.apply(calc_portfolio_cap_usage, axis=1)
+total_port_usage = df_portfolio["Capital Usage"].sum()
+st.write(f"**Current Portfolio Capital Usage**: {format_num(total_port_usage)}")
+
+# ================================================
+# SECTION 2: LGD REVERSION TABLE
+# ================================================
 st.markdown("---")
+st.subheader("Section 2: LGD Reversion Table")
 
-# =====================================
-# 7. CLN Issuance: Additional Considerations
-# =====================================
-st.subheader("7. CLN Issuance: Additional Considerations")
 st.write(
     """
-    Once you've determined where LGD reduction is most beneficial, you may decide 
-    to **issue CLNs** (Credit-Linked Notes) for certain loans or clients. 
-    Select the client(s) you actually want to issue CLNs for:
+    For each client, how much of the loan (ZAR and %) must be sold 
+    to revert from **New LGD** to **Old LGD**, ignoring any shortfall logic.
     """
 )
 
-all_clients = df_display["Client"].tolist()
-selected_clients_for_clns = st.multiselect(
-    "Choose which clients to cover with CLNs:",
-    options=all_clients,
-    default=[]
+df_lgd = df_portfolio.copy()
+df_lgd["Loan to Sell (ZAR)"] = df_lgd.apply(calc_loan_to_sell_for_lgd_reversion, axis=1)
+df_lgd["% of RCF to Sell"] = df_lgd.apply(fraction_of_drawn, axis=1)
+
+cols_display = [
+    "Client", "Sector", "Loan Amount", "Old LGD (%)", "New LGD (%)",
+    "Drawn (%)", "PD (%)", "Loan to Sell (ZAR)", "% of RCF to Sell"
+]
+df_lgd_disp = df_lgd[cols_display].copy()
+
+for col in cols_display[2:]:
+    df_lgd_disp[col] = df_lgd_disp[col].apply(lambda x: format_num(x))
+
+st.dataframe(df_lgd_disp, use_container_width=True)
+
+# ================================================
+# SECTION 3: AVAILABLE CAPITAL & SHORTFALL
+# ================================================
+st.markdown("---")
+st.subheader("Section 3: Available Capital & Shortfall")
+
+st.write(
+    """
+    We default your capital to match the current portfolio usage, 
+    so you're at 0 shortfall to start. Adjust if desired.
+    """
+)
+available_cap = st.number_input(
+    "Your total capital (ZAR)?",
+    min_value=0.0,
+    value=float(total_port_usage),
+    step=50_000_000.0
 )
 
-# For a real model, you'd incorporate the cost/spread of issuing CLNs and the coverage ratio.
-if selected_clients_for_clns:
-    st.markdown("**You have selected:**")
-    chosen_df = df_display[df_display["Client"].isin(selected_clients_for_clns)].copy()
-
-    st.markdown(
-        """
-        Below is an area to *optionally* specify a 'cost of protection' if you'd like 
-        to approximate the net benefit.
-        """
-    )
-    # Let the user add a cost of protection for each selected client
-    cost_of_protection = {}
-    for c in selected_clients_for_clns:
-        # Could be bps of the loan, or a nominal cost, etc.
-        val = st.number_input(
-            f"Cost of protection for {c} (ZAR):",
-            min_value=0.0,
-            value=0.0,
-            step=50000.0
-        )
-        cost_of_protection[c] = val
-
-    # Quick calculation: net capital saving in currency = Freed capital minus cost
-    chosen_df["Cost of Protection (ZAR)"] = chosen_df["Client"].apply(lambda x: cost_of_protection[x])
-    chosen_df["Net Benefit (ZAR)"] = chosen_df["Capital Freed (ZAR)"] - chosen_df["Cost of Protection (ZAR)"]
-
-    format_dict_cln = {
-        "Loan Amount (ZAR)": "{:,.0f}",
-        "Capital Freed (ZAR)": "{:,.2f}",
-        "Cost of Protection (ZAR)": "{:,.2f}",
-        "Net Benefit (ZAR)": "{:,.2f}"
-    }
-    st.dataframe(
-        hide_dataframe_index(
-            chosen_df[["Client", "Loan Amount (ZAR)", "Capital Freed (ZAR)",
-                       "Cost of Protection (ZAR)", "Net Benefit (ZAR)"]]
-            .style.format(format_dict_cln)
-        ),
-        use_container_width=True
-    )
-
-    st.info(
-        """
-        **Note**: In real-world deals, you'd factor in many details:
-        - **Coverage Ratio**: Are we covering 100% of the loan or just a portion?
-        - **Tenor Alignment**: The CLN maturity vs. the loan's maturity.
-        - **Regulatory Recognition**: For partial or full capital relief, 
-          does the CLN structure meet Basel/Regulator standards?
-        - **Market Appetite & Pricing**: Are investors willing to buy the CLN at a cost that justifies it?
-        - **Documentation & Legal Costs**: Setting up the CLN program and ensuring compliance.
-        """
+diff = available_cap - total_port_usage
+if diff < 0:
+    st.warning(
+        f"Existing portfolio usage exceeds your capital by {format_num(abs(diff))}."
     )
 else:
-    st.markdown("_No clients selected for CLN coverage yet._")
+    st.info(
+        f"You have {format_num(diff)} leftover after the existing portfolio."
+    )
 
+# ================================================
+# SECTION 4: NEW RCF
+# ================================================
 st.markdown("---")
+st.subheader("Section 4: Adding a New RCF")
 
-# =====================================
-# Footer / Final Notes
-# =====================================
+new_amt = st.number_input(
+    "New RCF Loan Amount",
+    min_value=0.0,
+    value=500_000_000.0,
+    step=50_000_000.0
+)
+new_drawn = st.slider("Drawn (%) for New RCF", min_value=0, max_value=100, value=60)
+new_pd = st.slider("PD (%) for New RCF", min_value=0.0, max_value=10.0, value=3.0)
+new_lgd = st.slider("LGD (%) for New RCF", min_value=0, max_value=60, value=40)
+
+rcf_use = new_rcf_usage(new_amt, new_drawn, new_pd, new_lgd)
+combined_usage = total_port_usage + rcf_use
+shortfall = combined_usage - available_cap
+
+st.write(f"**New RCF Capital Usage**: {format_num(rcf_use)}")
+if shortfall > 0:
+    st.error(
+        f"**Shortfall**: {format_num(shortfall)} above your available capital."
+    )
+else:
+    st.success(
+        f"No shortfall. Combined usage = {format_num(combined_usage)} ≤ {format_num(available_cap)}."
+    )
+
+# ================================================
+# SECTION 5: SELL-OFF SUGGESTIONS (≤100%)
+# ================================================
+st.markdown("---")
+st.subheader("Section 5: Industry Filter & Sell-off Options <100%")
+
 st.write(
     """
-    ### Final Thoughts
-    1. **Simplified Model**: Real-world capital models can be more intricate.  
-    2. **Cost vs. Benefit**: Always compare the cost of issuing credit protection to the 
-       capital freed.  
-    3. **Fictional Data**: All figures here are illustrative examples.  
+    If there's a shortfall, pick which industries you'd consider selling from. 
+    We'll show only the clients that could individually fix the shortfall 
+    with ≤ 100% partial coverage.
+    """
+)
 
-    *For advanced multi-constraint optimization or different coverage scenarios, 
-    consider integrating solvers like PuLP or OR-Tools.*
+if shortfall <= 0:
+    st.info("No shortfall → no sell-off needed.")
+else:
+    # We have a shortfall
+    st.write(f"Your shortfall = **{format_num(shortfall)}**. ")
+
+    all_industries = sorted(df_portfolio["Sector"].unique())
+    # Pre-select all by default
+    selected_inds = st.multiselect(
+        "Which industries to consider selling from?",
+        options=all_industries,
+        default=all_industries
+    )
+
+    # We'll see for each client in those industries:
+    # fraction_needed = shortfall / that_client_cap_usage * 100
+    # If fraction_needed <= 100 => that single client alone can solve shortfall with partial coverage
+    df_sell = df_portfolio[df_portfolio["Sector"].isin(selected_inds)].copy()
+
+    if df_sell.empty:
+        st.warning("No clients in those industries. Can't sell anything.")
+    else:
+        # Sort descending by capital usage
+        df_sell.sort_values(by="Capital Usage", ascending=False, inplace=True)
+
+
+        def fraction_needed(row):
+            cap_use = row["Capital Usage"]
+            if cap_use <= 0:
+                return 99999.0
+            return (shortfall / cap_use) * 100
+
+
+        df_sell["% Sell-Off to Cover Shortfall"] = df_sell.apply(fraction_needed, axis=1)
+        df_sell = df_sell[df_sell["% Sell-Off to Cover Shortfall"] <= 100]
+
+        if df_sell.empty:
+            st.warning("No single client can individually fix the shortfall with ≤100% coverage.")
+        else:
+            st.write(
+                """
+                Below are the clients that can fix the **entire** shortfall alone, 
+                with ≤100% partial coverage. 
+                """
+            )
+
+            show_cols = [
+                "Client", "Sector", "Loan Amount", "Drawn (%)", "PD (%)",
+                "New LGD (%)", "Capital Usage", "% Sell-Off to Cover Shortfall"
+            ]
+            df_disp = df_sell[show_cols].copy()
+
+            for col in ["Loan Amount", "Drawn (%)", "PD (%)",
+                        "New LGD (%)", "Capital Usage", "% Sell-Off to Cover Shortfall"]:
+                df_disp[col] = df_disp[col].apply(lambda x: format_num(x))
+
+            st.dataframe(df_disp, use_container_width=True)
+
+            st.write(
+                """
+                **Interpretation**: If "% Sell-Off to Cover Shortfall" is, say, 40%, 
+                it means selling 40% of this client's **drawn** loan portion 
+                would fix the shortfall alone.
+                """
+            )
+
+st.markdown("---")
+st.write(
+    """
+    **Done**. You've seen:
+    1. Editable portfolio & capital usage.
+    2. LGD reversion amounts.
+    3. Capital & shortfall logic.
+    4. A new RCF that might cause a shortfall.
+    5. Single-client partial coverage in selected industries for ≤100% sell-off to fix shortfall.
     """
 )
